@@ -220,7 +220,32 @@ class TuyaCloudApi:
         return True
 
     async def async_get_lock_state(self, device_id: str) -> bool | None:
-        """Get lock_motor_state. Returns True if unlocked, False if locked, None on error."""
+        """Get lock state. Returns True if unlocked, False if locked, None on error."""
+        path = STATUS_ENDPOINT.format(device_id=device_id)
+        resp = await self._request("GET", path)
+
+        if not resp.get("success"):
+            _LOGGER.error("Failed to get status: %s", resp.get("msg"))
+            return None
+
+        dps = {dp["code"]: dp["value"] for dp in resp.get("result", [])}
+
+        if "lock_motor_state" in dps:
+            return dps["lock_motor_state"]
+
+        if "closed_opened" in dps:
+            # Some lock models (no motor-position sensor) report state via
+            # closed_opened instead of lock_motor_state: 'opened' == unlocked,
+            # 'closed' == locked. Same True/False contract as lock_motor_state.
+            return dps["closed_opened"] == "opened"
+
+        return None
+
+    async def async_get_door_state(self, device_id: str) -> bool | None:
+        """Get door open/closed state from the closed_opened datapoint.
+
+        Returns True if open, False if closed, None on error.
+        """
         path = STATUS_ENDPOINT.format(device_id=device_id)
         resp = await self._request("GET", path)
 
@@ -229,7 +254,7 @@ class TuyaCloudApi:
             return None
 
         for dp in resp.get("result", []):
-            if dp["code"] == "lock_motor_state":
-                return dp["value"]
+            if dp["code"] == "closed_opened":
+                return dp["value"] == "opened"
 
         return None

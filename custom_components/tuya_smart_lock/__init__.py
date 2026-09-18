@@ -11,7 +11,7 @@ from .tuya_api import TuyaCloudApi
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.LOCK]
+PLATFORMS = [Platform.LOCK, Platform.BINARY_SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -60,6 +60,18 @@ class TuyaSmartLock(LockEntity):
         self._device_name = device_name
         self._cancel_verify = None
 
+    async def async_added_to_hass(self) -> None:
+        """Fetch the real lock state as soon as HA adds this entity.
+
+        Without this, _attr_available stays False from __init__ forever:
+        there's no polling and nothing else fetches state on startup, and
+        HA refuses to route lock/unlock commands to an unavailable entity
+        - so the lock could never recover after a restart.
+        """
+        await super().async_added_to_hass()
+        await self.async_update()
+        self.async_write_ha_state()
+
     @property
     def device_info(self):
         """Link to the existing Tuya device if present, otherwise create our own."""
