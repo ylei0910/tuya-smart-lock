@@ -243,7 +243,7 @@ class TuyaCloudApi:
 
     async def async_get_specification(self, device_id: str) -> dict:
         """TEMPORARY DEBUG: fetch the device's full functions/status schema."""
-        path = f"/v1.0/devices/{device_id}/specification"
+        path = f"/v1.0/iot-03/devices/{device_id}/specification"
         return await self._request("GET", path)
 
     async def async_get_door_state(self, device_id: str) -> bool | None:
