@@ -69,8 +69,6 @@ class TuyaSmartLock(LockEntity):
         - so the lock could never recover after a restart.
         """
         await super().async_added_to_hass()
-        spec = await self._api.async_get_specification(self._device_id)
-        _LOGGER.error("DEBUG spec for %s: %s", self._device_id, spec)
         await self.async_update()
         self.async_write_ha_state()
 

@@ -219,37 +219,12 @@ class TuyaCloudApi:
         _LOGGER.info("Door %s locked successfully", device_id)
         return True
 
-    async def async_get_lock_state(self, device_id: str) -> bool | None:
-        """Get lock state. Returns True if unlocked, False if locked, None on error."""
-        path = STATUS_ENDPOINT.format(device_id=device_id)
-        resp = await self._request("GET", path)
+    async def async_get_status(self, device_id: str) -> dict[str, object] | None:
+        """Fetch all current datapoints for a device as a {code: value} dict.
 
-        if not resp.get("success"):
-            _LOGGER.error("Failed to get status: %s", resp.get("msg"))
-            return None
-
-        dps = {dp["code"]: dp["value"] for dp in resp.get("result", [])}
-
-        if "lock_motor_state" in dps:
-            return dps["lock_motor_state"]
-
-        if "closed_opened" in dps:
-            # Some lock models (no motor-position sensor) report state via
-            # closed_opened instead of lock_motor_state: 'opened' == unlocked,
-            # 'closed' == locked. Same True/False contract as lock_motor_state.
-            return dps["closed_opened"] == "opened"
-
-        return None
-
-    async def async_get_specification(self, device_id: str) -> dict:
-        """TEMPORARY DEBUG: fetch the device's full functions/status schema."""
-        path = f"/v1.0/iot-03/devices/{device_id}/specification"
-        return await self._request("GET", path)
-
-    async def async_get_door_state(self, device_id: str) -> bool | None:
-        """Get door open/closed state from the closed_opened datapoint.
-
-        Returns True if open, False if closed, None on error.
+        Returns None on error. Shared by the lock entity and the
+        coordinator-backed diagnostic entities so there's a single place
+        that knows how to read the status endpoint.
         """
         path = STATUS_ENDPOINT.format(device_id=device_id)
         resp = await self._request("GET", path)
@@ -258,8 +233,28 @@ class TuyaCloudApi:
             _LOGGER.error("Failed to get status: %s", resp.get("msg"))
             return None
 
-        for dp in resp.get("result", []):
-            if dp["code"] == "closed_opened":
-                return dp["value"] == "opened"
+        return {dp["code"]: dp["value"] for dp in resp.get("result", [])}
+
+    async def async_get_lock_state(self, device_id: str) -> bool | None:
+        """Get lock state. Returns True if unlocked, False if locked, None on error.
+
+        Per Tuya's own device specification for this lock category
+        (checked via /v1.0/iot-03/devices/{id}/specification), this
+        device has no lock_motor_state datapoint. Its closed_opened
+        datapoint's *documented* enum range is only ["closed", "unknown"]
+        - "opened" is not a documented value, even though it's what the
+        device actually reports in practice. Treat this as a best-effort
+        reading, not a guaranteed-fresh, spec-clean lock state: there is
+        no better datapoint available for this device model.
+        """
+        dps = await self.async_get_status(device_id)
+        if dps is None:
+            return None
+
+        if "lock_motor_state" in dps:
+            return dps["lock_motor_state"]
+
+        if "closed_opened" in dps:
+            return dps["closed_opened"] == "opened"
 
         return None
