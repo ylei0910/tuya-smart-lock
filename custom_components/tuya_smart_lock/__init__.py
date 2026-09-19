@@ -56,14 +56,23 @@ class TuyaSmartLockStatusCoordinator(DataUpdateCoordinator[dict]):
             self._cancel_next_poll = None
 
     def _schedule_next_poll(self) -> None:
+        _LOGGER.error("DEBUG poll: arming next poll in %ss", STATUS_POLL_INTERVAL_SECONDS)
         self._cancel_next_poll = async_call_later(
             self.hass, STATUS_POLL_INTERVAL_SECONDS, self._async_poll_once
         )
 
     async def _async_poll_once(self, _now) -> None:
+        _LOGGER.error("DEBUG poll: fired, refreshing")
         self._cancel_next_poll = None
-        await self.async_refresh()
-        self._schedule_next_poll()
+        try:
+            await self.async_refresh()
+            _LOGGER.error("DEBUG poll: refresh done, last_update_success=%s", self.last_update_success)
+        except Exception:
+            _LOGGER.exception("DEBUG poll: async_refresh raised")
+        try:
+            self._schedule_next_poll()
+        except Exception:
+            _LOGGER.exception("DEBUG poll: _schedule_next_poll raised")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
