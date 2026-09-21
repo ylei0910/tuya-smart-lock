@@ -125,12 +125,17 @@ class TuyaSmartLock(LockEntity):
 
         self._attr_is_locking = False
         if success:
-            # A successful cloud response only confirms command acceptance, not
-            # that the physical bolt moved. Keep the prior state unavailable
-            # until a targeted verification completes.
-            self._attr_available = False
-            self._schedule_verification(5)
+            self._attr_is_locked = True
+            self._attr_available = True
         self.async_write_ha_state()
+
+        if success:
+            # A successful cloud response only confirms command acceptance, not
+            # that the physical bolt moved - verify shortly after instead of
+            # assuming the lock completed the operation. Same pattern as
+            # async_unlock below: optimistic immediately, quiet verification
+            # in the background rather than a visible unavailable blip.
+            self._schedule_verification(5)
 
     async def async_unlock(self, **kwargs) -> None:
         """Unlock the door."""
