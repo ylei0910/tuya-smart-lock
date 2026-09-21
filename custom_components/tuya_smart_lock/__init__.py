@@ -56,23 +56,29 @@ class TuyaSmartLockStatusCoordinator(DataUpdateCoordinator[dict]):
             self._cancel_next_poll = None
 
     def _schedule_next_poll(self) -> None:
-        _LOGGER.error("DEBUG poll: arming next poll in %ss", STATUS_POLL_INTERVAL_SECONDS)
         self._cancel_next_poll = async_call_later(
             self.hass, STATUS_POLL_INTERVAL_SECONDS, self._async_poll_once
         )
 
     async def _async_poll_once(self, _now) -> None:
-        _LOGGER.error("DEBUG poll: fired, refreshing")
+        """Refresh once, then always reschedule - even if the refresh failed.
+
+        Confirmed by testing: an earlier version called _schedule_next_poll()
+        only after an unguarded await self.async_refresh(), so any exception
+        there (even a rare, transient one) would propagate out of this
+        callback and permanently end the poll loop with no visible error.
+        Wrapping both steps independently means one bad cycle can no longer
+        kill polling for good.
+        """
         self._cancel_next_poll = None
         try:
             await self.async_refresh()
-            _LOGGER.error("DEBUG poll: refresh done, last_update_success=%s", self.last_update_success)
         except Exception:
-            _LOGGER.exception("DEBUG poll: async_refresh raised")
+            _LOGGER.exception("Unexpected error refreshing status")
         try:
             self._schedule_next_poll()
         except Exception:
-            _LOGGER.exception("DEBUG poll: _schedule_next_poll raised")
+            _LOGGER.exception("Unexpected error scheduling next poll")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
