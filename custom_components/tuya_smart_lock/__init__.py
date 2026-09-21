@@ -1,7 +1,9 @@
 """Tuya Smart Lock integration."""
 
 import logging
+from datetime import datetime
 
+import homeassistant.util.dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -15,11 +17,15 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.BINARY_SENSOR]
 
-# The lock entity itself is deliberately not coordinator-driven (it's
-# on-demand: fetches on load and after each lock/unlock's verification
-# window). This coordinator is only for the read-only diagnostic
-# entities (battery, alarm, doorbell, etc.) added in sensor.py /
-# binary_sensor.py, so they share one poll instead of one API call each.
+# The lock entity primarily stays on-demand (fetches on load and after
+# each lock/unlock's verification window) rather than polling on its own.
+# But it also listens to this coordinator's periodic reads and adopts
+# whichever of the two - its own last on-demand fetch, or the
+# coordinator's last periodic poll - is more recent (see
+# last_success_time below and lock.py's _handle_coordinator_update).
+# That matters because only the coordinator's poll would ever notice a
+# lock/unlock done outside HA (physical keypad, the Tuya app, etc.) - the
+# lock entity's on-demand-only fetches never would on their own.
 STATUS_POLL_INTERVAL_SECONDS = 60
 
 
@@ -38,11 +44,13 @@ class TuyaSmartLockStatusCoordinator(DataUpdateCoordinator[dict]):
         self._api = api
         self._device_id = device_id
         self._cancel_next_poll = None
+        self.last_success_time: datetime | None = None
 
     async def _async_update_data(self) -> dict:
         dps = await self._api.async_get_status(self._device_id)
         if dps is None:
             raise UpdateFailed("Failed to fetch device status")
+        self.last_success_time = dt_util.utcnow()
         return dps
 
     def start_polling(self) -> None:

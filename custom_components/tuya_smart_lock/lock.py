@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+from datetime import datetime
 
 import aiohttp
 
+import homeassistant.util.dt as dt_util
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -12,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
 from .const import CONF_DEVICE_ID, CONF_DEVICE_NAME, DOMAIN
+from .tuya_api import derive_unlocked_state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ async def async_setup_entry(
     """Set up lock entity from config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     api = data["api"]
+    coordinator = data["coordinator"]
     entry_data = data["entry_data"]
     device_id = entry_data[CONF_DEVICE_ID]
     device_name = entry_data[CONF_DEVICE_NAME]
@@ -36,20 +40,31 @@ async def async_setup_entry(
         auto_lock_time = DEFAULT_AUTO_LOCK_DELAY
 
     async_add_entities(
-        [TuyaSmartLock(api, device_id, device_name, auto_lock_time)],
+        [TuyaSmartLock(api, coordinator, device_id, device_name, auto_lock_time)],
         True,
     )
 
 
 class TuyaSmartLock(LockEntity):
-    """Lock entity that controls a Tuya smart lock via Cloud API."""
+    """Lock entity that controls a Tuya smart lock via Cloud API.
+
+    State comes from two sources that can each be the freshest at any
+    given moment: this entity's own on-demand fetches (on load, and
+    after each lock/unlock's verification window), and the shared status
+    coordinator's independent periodic polling (see __init__.py). Only
+    the coordinator would ever notice a lock/unlock done outside HA
+    (physical keypad, the Tuya app), so this entity also listens to it
+    and adopts whichever of the two last successfully read the device -
+    see _last_fetch_time and _handle_coordinator_update.
+    """
 
     _attr_has_entity_name = True
     _attr_name = None
     _attr_should_poll = False
 
-    def __init__(self, api, device_id: str, device_name: str, auto_lock_time: int) -> None:
+    def __init__(self, api, coordinator, device_id: str, device_name: str, auto_lock_time: int) -> None:
         self._api = api
+        self._coordinator = coordinator
         self._device_id = device_id
         self._auto_lock_time = auto_lock_time
         self._attr_unique_id = f"tuya_smart_lock_{device_id}"
@@ -59,6 +74,8 @@ class TuyaSmartLock(LockEntity):
         self._attr_is_unlocking = False
         self._device_name = device_name
         self._cancel_verify = None
+        self._last_fetch_time: datetime | None = None
+        self._remove_coordinator_listener = None
 
     async def async_added_to_hass(self) -> None:
         """Fetch the real lock state as soon as HA adds this entity.
@@ -71,6 +88,9 @@ class TuyaSmartLock(LockEntity):
         await super().async_added_to_hass()
         await self.async_update()
         self.async_write_ha_state()
+        self._remove_coordinator_listener = self._coordinator.async_add_listener(
+            self._handle_coordinator_update
+        )
 
     @property
     def device_info(self):
@@ -96,6 +116,7 @@ class TuyaSmartLock(LockEntity):
 
         self._attr_is_locked = not state
         self._attr_available = True
+        self._last_fetch_time = dt_util.utcnow()
 
     async def _async_get_real_state(self):
         """Read cloud state while converting expected transport failures to unknown."""
@@ -116,6 +137,34 @@ class TuyaSmartLock(LockEntity):
             )
             return None
 
+    def _handle_coordinator_update(self) -> None:
+        """Adopt the coordinator's reading if it's fresher than our own last fetch.
+
+        Only the coordinator's periodic polling would ever notice a
+        lock/unlock done outside HA, so this is what lets that reach the
+        lock entity - otherwise it would only ever change state in
+        response to commands issued through HA itself.
+        """
+        fetched_at = self._coordinator.last_success_time
+        if fetched_at is None:
+            return
+        if self._last_fetch_time is not None and fetched_at <= self._last_fetch_time:
+            return
+
+        dps = self._coordinator.data
+        if dps is None:
+            return
+        state = derive_unlocked_state(dps)
+        if not isinstance(state, bool):
+            return
+
+        self._last_fetch_time = fetched_at
+        if self._attr_is_locked == (not state) and self._attr_available:
+            return
+        self._attr_is_locked = not state
+        self._attr_available = True
+        self.async_write_ha_state()
+
     async def async_lock(self, **kwargs) -> None:
         """Lock the door."""
         self._attr_is_locking = True
@@ -127,6 +176,7 @@ class TuyaSmartLock(LockEntity):
         if success:
             self._attr_is_locked = True
             self._attr_available = True
+            self._last_fetch_time = dt_util.utcnow()
         self.async_write_ha_state()
 
         if success:
@@ -148,6 +198,7 @@ class TuyaSmartLock(LockEntity):
         if success:
             self._attr_is_locked = False
             self._attr_available = True
+            self._last_fetch_time = dt_util.utcnow()
         self.async_write_ha_state()
 
         if success:
@@ -171,6 +222,9 @@ class TuyaSmartLock(LockEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Cancel delayed work when Home Assistant removes the entity."""
         self._cancel_pending_verification()
+        if self._remove_coordinator_listener is not None:
+            self._remove_coordinator_listener()
+            self._remove_coordinator_listener = None
         await super().async_will_remove_from_hass()
 
     async def _async_verify_after_auto_lock(self, _now) -> None:
@@ -182,4 +236,3 @@ class TuyaSmartLock(LockEntity):
         if self._attr_available == was_available and self._attr_is_locked == previous_state:
             return
         self.async_write_ha_state()
-

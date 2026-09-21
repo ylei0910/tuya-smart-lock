@@ -236,25 +236,38 @@ class TuyaCloudApi:
         return {dp["code"]: dp["value"] for dp in resp.get("result", [])}
 
     async def async_get_lock_state(self, device_id: str) -> bool | None:
-        """Get lock state. Returns True if unlocked, False if locked, None on error.
+        """Get lock state via a fresh fetch. Returns True if unlocked, False if locked, None on error.
 
-        Per Tuya's own device specification for this lock category
-        (checked via /v1.0/iot-03/devices/{id}/specification), this
-        device has no lock_motor_state datapoint. Its closed_opened
-        datapoint's *documented* enum range is only ["closed", "unknown"]
-        - "opened" is not a documented value, even though it's what the
-        device actually reports in practice. Treat this as a best-effort
-        reading, not a guaranteed-fresh, spec-clean lock state: there is
-        no better datapoint available for this device model.
+        See derive_unlocked_state() for the closed_opened caveat.
         """
         dps = await self.async_get_status(device_id)
         if dps is None:
             return None
+        return derive_unlocked_state(dps)
 
-        if "lock_motor_state" in dps:
-            return dps["lock_motor_state"]
 
-        if "closed_opened" in dps:
-            return dps["closed_opened"] == "opened"
+def derive_unlocked_state(dps: dict[str, object]) -> bool | None:
+    """Given a {code: value} status dict, return True if unlocked, False if locked, None if unknown.
 
-        return None
+    Pulled out as a standalone function (rather than only living inside
+    async_get_lock_state) so both the lock entity's own on-demand fetches
+    and the shared status coordinator's periodic fetches derive lock state
+    identically from the same raw dps, regardless of which one produced
+    the freshest read at any given moment.
+
+    Per Tuya's own device specification for this lock category (checked
+    via /v1.0/iot-03/devices/{id}/specification), this device has no
+    lock_motor_state datapoint. Its closed_opened datapoint's *documented*
+    enum range is only ["closed", "unknown"] - "opened" is not a
+    documented value, even though it's what the device actually reports
+    in practice. Treat this as a best-effort reading, not a
+    guaranteed-fresh, spec-clean lock state: there is no better datapoint
+    available for this device model.
+    """
+    if "lock_motor_state" in dps:
+        return dps["lock_motor_state"]
+
+    if "closed_opened" in dps:
+        return dps["closed_opened"] == "opened"
+
+    return None
