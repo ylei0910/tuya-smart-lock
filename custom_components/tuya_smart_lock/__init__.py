@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import CONF_ACCESS_ID, CONF_ACCESS_SECRET, CONF_API_REGION, CONF_DEVICE_ID, DOMAIN
 from .tuya_api import TuyaCloudApi
+from .tuya_pulsar import TuyaPulsarClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,10 +110,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_refresh()
     coordinator.start_polling()
 
+    # PHASE 1 (log-and-observe only): push events arrive on the Pulsar
+    # client's own background thread, so this callback must stay purely
+    # thread-safe (plain logging only) and must NOT touch any HA state or
+    # entity directly - that would need hass.add_job() to hand off to the
+    # event loop, which a later phase will add once the real event
+    # payload shape for this device is known.
+    def _handle_pulsar_message(event: dict) -> None:
+        event_device_id = event.get("devId") or event.get("bizData", {}).get("devId")
+        if event_device_id is not None and event_device_id != device_id:
+            return
+        _LOGGER.error("Pulsar event for %s: %s", device_id, event)
+
+    pulsar_client = TuyaPulsarClient(
+        access_id=entry.data[CONF_ACCESS_ID],
+        access_secret=entry.data[CONF_ACCESS_SECRET],
+        region=entry.data[CONF_API_REGION],
+        on_message=_handle_pulsar_message,
+    )
+    pulsar_client.start()
+
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "entry_data": entry.data,
         "coordinator": coordinator,
+        "pulsar_client": pulsar_client,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -126,4 +148,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data = hass.data[DOMAIN].pop(entry.entry_id, None)
         if data is not None:
             data["coordinator"].stop_polling()
+            data["pulsar_client"].stop()
     return unload_ok
