@@ -35,6 +35,7 @@ from typing import Callable
 
 import websocket
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .const import API_REGIONS
 
@@ -100,7 +101,24 @@ class TuyaPulsarClient(threading.Thread):
         mix = self._access_id + secret_md5
         return hashlib.md5(mix.encode("utf-8")).hexdigest()[8:24]
 
-    def _decrypt(self, raw_b64: str) -> str:
+    def _decrypt_gcm(self, raw_b64: str) -> str:
+        """Decrypt a message's 'data' field with AES-GCM.
+
+        Key is the same access_secret[8:24] as ECB. Framing (confirmed
+        against Tuya's own, currently-maintained tuya-pulsar-sdk-go -
+        pkg/tyutils/aes.go's GcmDecrypt): first 12 bytes of the decoded
+        blob are the nonce, the rest is ciphertext with the auth tag
+        appended - the standard AEAD convention, which is also exactly
+        what cryptography's AESGCM.decrypt expects, so no manual tag
+        splitting is needed. No associated data.
+        """
+        key = self._access_secret[8:24].encode("utf-8")
+        raw = base64.b64decode(raw_b64)
+        nonce, ciphertext = raw[:12], raw[12:]
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
+        return plaintext.decode("utf-8")
+
+    def _decrypt_ecb(self, raw_b64: str) -> str:
         """Decrypt a message's 'data' field: AES-ECB with key=access_secret[8:24], PKCS7-unpadded."""
         key = self._access_secret[8:24].encode("utf-8")
         raw = base64.b64decode(raw_b64)
@@ -108,6 +126,23 @@ class TuyaPulsarClient(threading.Thread):
         decrypted = decryptor.update(raw) + decryptor.finalize()
         pad_len = decrypted[-1]
         return decrypted[:-pad_len].decode("utf-8")
+
+    def _decrypt(self, raw_b64: str) -> str:
+        """Decrypt a message's 'data' field, trying GCM (the configured/recommended
+        mode) first and falling back to ECB.
+
+        This client uses Tuya's older websocket-wrapper transport rather
+        than the native Pulsar protocol, and it's unconfirmed whether
+        that transport exposes the per-message encryption-mode property
+        ("em") the native-protocol SDKs use to pick a decrypt path
+        up front. Trying GCM then falling back to ECB avoids depending
+        on an unconfirmed field - a successful decrypt always produces
+        valid UTF-8 JSON, which is the actual thing that matters.
+        """
+        try:
+            return self._decrypt_gcm(raw_b64)
+        except Exception:
+            return self._decrypt_ecb(raw_b64)
 
     def _handle_ws_message(self, ws_app, message: str) -> None:
         message_id = None
