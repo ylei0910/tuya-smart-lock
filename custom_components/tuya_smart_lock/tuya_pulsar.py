@@ -170,15 +170,39 @@ class TuyaPulsarClient(threading.Thread):
         except Exception:
             _LOGGER.exception("Failed to ack Pulsar message %s", message_id)
 
+    def _handle_ws_open(self, ws_app) -> None:
+        # WARNING, not debug: this is the only positive "it's actually
+        # working" signal this client ever produces on its own, and a
+        # prior version's total silence while quietly dead (see
+        # _run_once's docstring) made a real failure indistinguishable
+        # from a healthy connection for hours. Rare enough (once per
+        # connect, not per-message) that this isn't log spam.
+        _LOGGER.warning("Pulsar websocket connected")
+
     def _handle_ws_error(self, ws_app, error) -> None:
-        _LOGGER.debug("Pulsar websocket error: %s", error)
+        _LOGGER.warning("Pulsar websocket error: %s", error)
 
     def _handle_ws_close(self, ws_app, close_status_code, close_msg) -> None:
-        _LOGGER.debug(
+        _LOGGER.warning(
             "Pulsar websocket closed (code=%s, msg=%s)", close_status_code, close_msg
         )
 
     def run(self) -> None:
+        # Outer try/except as a last-resort safety net: run() is a Thread's
+        # entry point, so any exception that escapes it kills this thread
+        # silently (Python's default unhandled-thread-exception handling
+        # goes to stderr, not Home Assistant's logger) - no more reconnect
+        # attempts, ever, with nothing in the HA log explaining why. A
+        # previous version had this gap: run_forever() was wrapped, but
+        # WebSocketApp(...) construction on each retry iteration was not,
+        # and losing visibility into a dead thread for hours is exactly
+        # what happened here.
+        try:
+            self._run_loop()
+        except Exception:
+            _LOGGER.exception("Pulsar client thread crashed and will not retry")
+
+    def _run_loop(self) -> None:
         header = {
             "Connection": "Upgrade",
             "username": self._access_id,
@@ -186,23 +210,33 @@ class TuyaPulsarClient(threading.Thread):
         }
         websocket.setdefaulttimeout(CONNECT_TIMEOUT_SECONDS)
         while not self._stop_event.is_set():
+            self._run_once(header)
+            if not self._stop_event.is_set():
+                self._stop_event.wait(RECONNECT_DELAY_SECONDS)
+
+    def _run_once(self, header: dict) -> None:
+        """One connect-and-run_forever attempt. Never lets an exception escape.
+
+        Everything that can fail - building the WebSocketApp as much as
+        running it - is inside this one try/except, so a bad attempt can
+        only end this attempt, never the retry loop itself.
+        """
+        try:
             self._ws_app = websocket.WebSocketApp(
                 self._topic_url(),
                 header=header,
+                on_open=self._handle_ws_open,
                 on_message=self._handle_ws_message,
                 on_error=self._handle_ws_error,
                 on_close=self._handle_ws_close,
             )
-            try:
-                self._ws_app.run_forever(
-                    sslopt={"cert_reqs": ssl.CERT_NONE},
-                    ping_interval=PING_INTERVAL_SECONDS,
-                    ping_timeout=PING_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                _LOGGER.exception("Pulsar websocket run_forever raised")
-            if not self._stop_event.is_set():
-                self._stop_event.wait(RECONNECT_DELAY_SECONDS)
+            self._ws_app.run_forever(
+                sslopt={"cert_reqs": ssl.CERT_NONE},
+                ping_interval=PING_INTERVAL_SECONDS,
+                ping_timeout=PING_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            _LOGGER.exception("Pulsar websocket connection attempt failed")
 
     def stop(self) -> None:
         self._stop_event.set()
