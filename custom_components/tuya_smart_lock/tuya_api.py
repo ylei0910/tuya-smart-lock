@@ -12,6 +12,7 @@ from .const import (
     API_REGIONS,
     DOOR_OPERATE_ENDPOINT,
     LOCK_CATEGORIES,
+    LOGS_ENDPOINT,
     REMOTE_UNLOCKS_ENDPOINT,
     STATUS_ENDPOINT,
     TICKET_ENDPOINT,
@@ -234,6 +235,30 @@ class TuyaCloudApi:
             return None
 
         return {dp["code"]: dp["value"] for dp in resp.get("result", [])}
+
+    async def async_get_logs(
+        self,
+        device_id: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        log_types: str = "1,2,3,4,5,6,7,8,9,10",
+        size: int = 100,
+    ) -> dict:
+        """Fetch raw device event logs for a time window (diagnostic only).
+
+        Returns the raw Tuya response dict (not normalized) so a one-off
+        diagnostic call can inspect whatever shape comes back - this isn't
+        wired into any entity, just used to check whether a real
+        lock/unlock actually shows up as a logged event (and under which
+        log type/code) independently of whether Pulsar delivered anything
+        for it.
+        """
+        path = (
+            LOGS_ENDPOINT.format(device_id=device_id)
+            + f"?start_time={start_time_ms}&end_time={end_time_ms}"
+            + f"&type={log_types}&size={size}"
+        )
+        return await self._request("GET", path)
 
     async def async_get_lock_state(self, device_id: str) -> bool | None:
         """Get lock state via a fresh fetch. Returns True if unlocked, False if locked, None on error.

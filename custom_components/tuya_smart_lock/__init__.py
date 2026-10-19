@@ -3,10 +3,12 @@
 import logging
 from datetime import datetime
 
+import voluptuous as vol
+
 import homeassistant.util.dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -17,6 +19,9 @@ from .tuya_pulsar import TuyaPulsarClient
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.BINARY_SENSOR]
+
+SERVICE_FETCH_LOGS = "fetch_device_logs"
+SERVICE_FETCH_LOGS_SCHEMA = vol.Schema({vol.Optional("hours", default=48): vol.Coerce(int)})
 
 # The lock entity primarily stays on-demand (fetches on load and after
 # each lock/unlock's verification window) rather than polling on its own.
@@ -138,6 +143,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Diagnostic-only service: pull raw event logs for this device over a
+    # lookback window and dump them to the log at a visible level. Used to
+    # check, independently of whether Pulsar ever delivers anything,
+    # whether a real lock/unlock action even shows up as a logged event on
+    # Tuya's side at all - and if so, under which log type/code.
+    async def _handle_fetch_logs(call: ServiceCall) -> None:
+        hours = call.data["hours"]
+        now_ms = int(dt_util.utcnow().timestamp() * 1000)
+        start_ms = now_ms - hours * 3600 * 1000
+        for entry_data in hass.data[DOMAIN].values():
+            dev_id = entry_data["entry_data"][CONF_DEVICE_ID]
+            result = await entry_data["api"].async_get_logs(dev_id, start_ms, now_ms)
+            _LOGGER.warning("Device logs for %s (last %sh): %s", dev_id, hours, result)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_FETCH_LOGS):
+        hass.services.async_register(
+            DOMAIN, SERVICE_FETCH_LOGS, _handle_fetch_logs, schema=SERVICE_FETCH_LOGS_SCHEMA
+        )
+
     return True
 
 

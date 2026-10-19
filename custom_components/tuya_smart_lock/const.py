@@ -32,3 +32,4 @@ DOOR_OPERATE_ENDPOINT = "/v1.0/smart-lock/devices/{device_id}/password-free/door
 STATUS_ENDPOINT = "/v1.0/iot-03/devices/{device_id}/status"
 DEVICES_ENDPOINT = "/v1.0/users/{uid}/devices"
 REMOTE_UNLOCKS_ENDPOINT = "/v1.0/devices/{device_id}/door-lock/remote-unlocks"
+LOGS_ENDPOINT = "/v1.0/devices/{device_id}/logs"
