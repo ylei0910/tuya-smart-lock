@@ -1,0 +1,15 @@
+fetch_device_logs:
+  name: Fetch device logs
+  description: >-
+    Diagnostic-only: pull raw Tuya event logs for the configured device over
+    a lookback window and dump them to the Home Assistant log.
+  fields:
+    hours:
+      name: Hours
+      description: How many hours back to look.
+      default: 48
+      selector:
+        number:
+          min: 1
+          max: 168
+          unit_of_measurement: hours

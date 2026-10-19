@@ -253,11 +253,19 @@ class TuyaCloudApi:
         log type/code) independently of whether Pulsar delivered anything
         for it.
         """
-        path = (
-            LOGS_ENDPOINT.format(device_id=device_id)
-            + f"?start_time={start_time_ms}&end_time={end_time_ms}"
-            + f"&type={log_types}&size={size}"
-        )
+        # Tuya's signature must be computed over the query string with its
+        # keys sorted alphabetically - the actual HTTP request is lenient
+        # about order, but the server recomputes the signature assuming
+        # sorted keys, so a path built in call order here fails signing
+        # ("sign invalid") even though it looks like a normal query string.
+        query = {
+            "end_time": end_time_ms,
+            "size": size,
+            "start_time": start_time_ms,
+            "type": log_types,
+        }
+        query_str = "&".join(f"{k}={v}" for k, v in sorted(query.items()))
+        path = LOGS_ENDPOINT.format(device_id=device_id) + "?" + query_str
         return await self._request("GET", path)
 
     async def async_get_lock_state(self, device_id: str) -> bool | None:
